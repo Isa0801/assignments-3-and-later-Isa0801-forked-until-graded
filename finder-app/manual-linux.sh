@@ -38,8 +38,8 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
 
-    make -j 2 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
-    make -j 2 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
+    make -j 3 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
+    make -j 3 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
 
     cp ./arch/${ARCH}/boot/Image ${OUTDIR}/
@@ -60,7 +60,7 @@ fi
 mkdir -p ${OUTDIR}/rootfs
 cd ${OUTDIR}/rootfs
 
-mkdir -p bin sbin usr etc dev lib proc sys tmp var
+mkdir -p bin sbin usr etc dev lib lib64 proc sys tmp var
 mkdir -p usr/bin usr/lib usr/sbin var/log
 
 cd "$OUTDIR"
@@ -110,7 +110,8 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 # on the target rootfs
 mkdir -p ${OUTDIR}/rootfs/home
 
-cp -r ${FINDER_APP_DIR}/ ${OUTDIR}/rootfs/home
+cp -Lr ${FINDER_APP_DIR}/* ${OUTDIR}/rootfs/home
+#cp -Lr ${FINDER_APP_DIR}/conf/ ${OUTDIR}/rootfs/home
 
 # TODO: Chown the root directory
 cd ${OUTDIR}/rootfs
