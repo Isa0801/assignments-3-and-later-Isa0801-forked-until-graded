@@ -5,6 +5,8 @@ GCC=${CROSS_COMPILE}gcc
 
 default: writer
 
+all: writer
+
 writer: writer.c
 	${GCC} writer.c -o writer
 
