@@ -1,6 +1,6 @@
 
 
-GCC=${CROSS_COMPILE}gcc
+CC=${CROSS_COMPILE}gcc
 
 
 default: aesdsocket
@@ -8,10 +8,10 @@ default: aesdsocket
 all: aesdsocket
 
 aesdsocket: aesdsocket.c
-	${GCC} aesdsocket.c -o aesdsocket
+	${CC} aesdsocket.c -o aesdsocket
 
 clean:
 	rm -f aesdsocket *.o
 
 print_gcc:
-	${GCC} -print-sysroot -v
+	${CC} -print-sysroot -v
