@@ -10,19 +10,27 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdbool.h>
+#include <sys/queue.h>
+#include <pthread.h> 
 
 #define LOGGING_CLIENT_DATA_PATH "/var/tmp/aesdsocketdata"
+
+struct entry_thread
+{
+	pthread_t thread_fd;
+	SLIST_ENTRY(entry_thread) entries;
+};
+
+SLIST_HEAD(link_head, entry_thread) list_head;
 
 int socket_fd = 0, client_fd = 0;
 const int max_connection = 10;
 struct sockaddr_in addr;
 int addr_size = sizeof(struct sockaddr_in);
 char client_addr[INET_ADDRSTRLEN];
-int data_buffer_size = sizeof(char) * 512;
-char *data_buffer;
 bool daemon_b = false;
-
-
+bool running_timestamp = true;
+pthread_mutex_t global_mutex;
 
 int read_from_aesdsockdata(char *data, int *buffer_size)
 {
@@ -44,7 +52,7 @@ int read_from_aesdsockdata(char *data, int *buffer_size)
             exit(-1);
         }
 
-        if (data_buffer[counter] == '\0')
+        if (data[counter] == '\0')
         {
             break;
         }
@@ -64,7 +72,7 @@ int read_from_aesdsockdata(char *data, int *buffer_size)
 	
 }
 
-void write_to_aesdsockdata(char *data, const int len)
+void write_to_aesdsockdata(char *data_buffer, const int len)
 {
 	int fd = open(LOGGING_CLIENT_DATA_PATH, O_RDWR|O_APPEND|O_CREAT, S_IRWXO|S_IRWXG|S_IRWXU);
 	
@@ -80,21 +88,30 @@ void write_to_aesdsockdata(char *data, const int len)
 
 void before_exit()
 {
-	if (data_buffer != NULL)
-        free(data_buffer);
 
-    if (client_fd == -1 || client_fd == 0)
-    {
-        close(client_fd);
-    }
+	running_timestamp = false;
 
-    if (socket_fd == -1 || socket_fd == 0)
-    {
-        shutdown(socket_fd, SHUT_RDWR); 
-    }
-	
+	while (!SLIST_EMPTY(&list_head)) {
+		printf("removing threads:\n");
+		struct entry_thread *p_thread = SLIST_FIRST(&list_head);
+		pthread_join((p_thread->thread_fd), NULL);
+		SLIST_REMOVE_HEAD(&list_head, entries);
+		free(p_thread);
+	}
+
+	if (client_fd != -1)
+	{
+			close(client_fd);
+	}
+
+	if (socket_fd == -1 || socket_fd == 0)
+	{
+			shutdown(socket_fd, SHUT_RDWR); 
+	}
+
 	closelog();
 	
+	printf("done\n");
 	remove(LOGGING_CLIENT_DATA_PATH);
 	
 }
@@ -104,6 +121,10 @@ void hande_signal()
     syslog(LOG_USER, "Caught signal, exiting");
     exit(0);
 }
+
+void* handle_connection_threaded(void*);
+
+void* handle_timerstamp_threaded(void*);
 
 
 int main(int argc, char **argv)
@@ -118,14 +139,15 @@ int main(int argc, char **argv)
 		}
 	}
 
-    openlog("aesdsocket", 0, LOG_USER);
-    
-    data_buffer = (char *) malloc(data_buffer_size);
-    socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-    addr = (struct sockaddr_in){.sin_family = AF_INET, .sin_port = htons(9000), .sin_addr = (struct in_addr){.s_addr = INADDR_ANY}};
+	SLIST_INIT(&list_head);
 
-    signal(SIGTERM, hande_signal);
-    signal(SIGINT, hande_signal);
+	openlog("aesdsocket", 0, LOG_USER);
+	
+	socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	addr = (struct sockaddr_in){.sin_family = AF_INET, .sin_port = htons(9000), .sin_addr = (struct in_addr){.s_addr = INADDR_ANY}};
+
+	signal(SIGTERM, hande_signal);
+	signal(SIGINT, hande_signal);
 	
 	int option = 1;
 	
@@ -165,68 +187,150 @@ int main(int argc, char **argv)
 		}
 	}
 
+
+	struct entry_thread *p_thread = malloc(sizeof(struct entry_thread));
+
+	int created = pthread_create(&p_thread->thread_fd, NULL, &handle_timerstamp_threaded, NULL);
+
+	if (created == -1)
+	{
+		printf("could not create thread\n");
+	}
+
+	if (SLIST_EMPTY(&list_head))
+		{
+			SLIST_INSERT_HEAD(&list_head, p_thread, entries);
+		} else if (SLIST_EMPTY(&list_head))
+		{
+			SLIST_INSERT_AFTER(SLIST_FIRST(&list_head), p_thread, entries);
+	}
+
 	while (1)
 	{
-		
+
 		client_fd = accept(socket_fd, (struct sockaddr *) &addr, &addr_size);
-		
+
 		if (client_fd == -1)
 		{
 			exit(-1);
 		}
 
+		p_thread = malloc(sizeof(struct entry_thread));
 
 		inet_ntop(AF_INET, &addr.sin_addr, client_addr, INET_ADDRSTRLEN);
-
 		syslog(LOG_USER, "Accepted connection from %s", client_addr);
 
-		int counter = 0;
-		int res;
+		int *thread_client_fd = malloc(sizeof(int));
+		*thread_client_fd = client_fd;
 
-		while((res = read(client_fd, &data_buffer[counter], 1)) == 1)
+		pthread_create(&p_thread->thread_fd, NULL, &handle_connection_threaded, thread_client_fd);
+
+		if (SLIST_EMPTY(&list_head))
 		{
-			if (res == -1)
-			{
-				hande_signal();
-			}
-
-			if (data_buffer[counter] == '\n' || data_buffer[counter] == '\0')
-			{
-				break;
-			}
-
-			counter++;
-
-			if ((counter) >= data_buffer_size)
-			{
-				data_buffer_size += 512;
-				data_buffer = realloc(data_buffer, data_buffer_size);
-			}
+			SLIST_INSERT_HEAD(&list_head, p_thread, entries);
+		} else if (!SLIST_EMPTY(&list_head))
+		{
+			SLIST_INSERT_AFTER(SLIST_FIRST(&list_head), p_thread, entries);
+		} else
+		{
+			printf("could not add\n");
 		}
 
-		if ((counter + 2) >= data_buffer_size)
+		client_fd = -1;
+		
+	}
+
+	return -1;
+
+}
+
+
+void* handle_timerstamp_threaded(void *arg)
+{
+
+	time_t old_time, current_time;
+	struct tm *tm_time;
+	char buffer[50];
+
+	time(&current_time);
+	time(&old_time);
+
+	while (running_timestamp)
+	{
+		time(&current_time);
+
+		if ((current_time - old_time) >= 10)
+		{
+			old_time = current_time;
+			tm_time = localtime(&current_time);
+			int bytes = strftime(buffer, 50, "timestamp:%c\n", tm_time);
+			
+	
+			pthread_mutex_lock(&global_mutex);
+			write_to_aesdsockdata(buffer, bytes);
+			pthread_mutex_unlock(&global_mutex);
+
+		}
+	}
+
+}
+
+void* handle_connection_threaded(void *arg)
+{
+	int counter = 0;
+	int res;
+	int client_fd = *(int*)arg;
+	free(arg);
+	int data_buffer_size = sizeof(char) * 512;
+	char *data_buffer = malloc(sizeof(char) * data_buffer_size);
+
+	while((res = read(client_fd, &data_buffer[counter], 1)) == 1)
+	{
+		if (res == -1)
+		{
+			pthread_exit(NULL);
+		}
+
+		if (data_buffer[counter] == '\n' || data_buffer[counter] == '\0')
+		{
+			break;
+		}
+
+		counter++;
+
+		if ((counter) >= data_buffer_size)
 		{
 			data_buffer_size += 512;
 			data_buffer = realloc(data_buffer, data_buffer_size);
 		}
-
-		char *newline = strchr(data_buffer, '\n');
-
-		*(newline + 1) = '\0';
-
-		
-		
-		write_to_aesdsockdata(data_buffer, (newline-data_buffer) + 1);
-		
-		int data_to_send = read_from_aesdsockdata(data_buffer, &data_buffer_size);
-		
-		write(client_fd, data_buffer, data_to_send);
-		
-		close(client_fd);
 	}
 
+	if ((counter + 2) >= data_buffer_size)
+	{
+		data_buffer_size += 512;
+		data_buffer = realloc(data_buffer, data_buffer_size);
+	}
 
+	char *newline = strchr(data_buffer, '\n');
+
+	*(newline + 1) = '\0';
+
+	pthread_mutex_lock(&global_mutex);
+	write_to_aesdsockdata(data_buffer, (newline - data_buffer) + 1);
+	pthread_mutex_unlock(&global_mutex);
+
+
+
+
+	pthread_mutex_lock(&global_mutex);
+	int data_to_send = read_from_aesdsockdata(data_buffer, &data_buffer_size);
+	pthread_mutex_unlock(&global_mutex);
 	
-	return -1;
+	pthread_mutex_lock(&global_mutex);
+	write(client_fd, data_buffer, data_to_send);
+	pthread_mutex_unlock(&global_mutex);
+	
+	close(client_fd);
 
+	free(data_buffer);
 }
